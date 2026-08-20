@@ -27,11 +27,12 @@ QUIET=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --onto) ONTO="${2:?--onto needs a ref}"; shift 2 ;;
+        --onto) [ $# -ge 2 ] || { echo "--onto needs a ref" >&2; exit 2; }
+                ONTO="$2"; shift 2 ;;
         --fetch) FETCH=true; shift ;;
         -q|--quiet) QUIET=true; shift ;;
         --self-test) shift; self_test=true; break ;;
-        -h|--help) sed -n '2,19p' "${SELF}" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help) sed -n '2,17p' "${SELF}" | sed 's/^# \?//'; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
         *) COMMIT="$1"; shift ;;
     esac
@@ -41,9 +42,12 @@ say() { [ "${QUIET}" = true ] || echo "$@"; }
 
 run() {
     if [ "${FETCH}" = true ]; then
-        # origin/main -> fetch main from origin; a local ref is left alone.
+        # origin/main -> fetch main from origin. A local branch is left alone --
+        # feature/x has a slash too, so ask git rather than guess from the name.
         case "${ONTO}" in
-            */*) git fetch -q "${ONTO%%/*}" "${ONTO#*/}" ;;
+            */*) git rev-parse --verify --quiet "refs/heads/${ONTO}" >/dev/null ||
+                     git fetch -q "${ONTO%%/*}" "${ONTO#*/}" ||
+                     { echo "cannot fetch ${ONTO}" >&2; exit 2; } ;;
         esac
     fi
 
@@ -88,7 +92,8 @@ if [ "${self_test:-false}" = true ]; then
     fail=0
     "${SELF}" feat --onto main -q || { echo "FAIL: squashed tree not found"; fail=1; }
     git checkout -q feat; echo drift >> f; git add f; git commit -qm drift
-    if "${SELF}" feat --onto main -q; then echo "FAIL: drifted tree reported as merged"; fail=1; fi
+    rc=0; "${SELF}" feat --onto main -q || rc=$?
+    [ "${rc}" -eq 1 ] || { echo "FAIL: drifted tree: want exit 1, got ${rc}"; fail=1; }
 
     [ "${fail}" -eq 0 ] && echo "✅ git-tree-merged self-test passed"
     exit "${fail}"
