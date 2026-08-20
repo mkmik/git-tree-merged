@@ -1,0 +1,103 @@
+.TH GIT\-TREE\-MERGED 1 "2026-08-20" "git\-tree\-merged" "Git Extras"
+.SH NAME
+git\-tree\-merged \- find a commit's tree on another branch
+.SH SYNOPSIS
+.B git tree\-merged
+.RI [ commit ]
+.RB [ \-\-onto
+.IR ref ]
+.RB [ \-\-fetch ]
+.RB [ \-q ]
+.br
+.B git tree\-merged \-\-self\-test
+.SH DESCRIPTION
+Squash, rebase and cherry\-pick all rewrite commit SHAs, so "is my work on
+main?" cannot be answered by SHA or by
+.BR "git branch \-\-merged" .
+A tree hash is a content hash of the whole worktree, so comparing trees
+answers it directly: equal tree means every file is byte\-identical, whatever
+the history looks like.
+.PP
+.B git tree\-merged
+resolves
+.I commit
+to its tree and walks
+.I ref
+newest\-first, stopping at the first commit with the same tree. It reports
+that commit and its subject, or reports that no such commit exists.
+.SH OPTIONS
+.TP
+.I commit
+Commit to look for. Defaults to
+.BR HEAD .
+.TP
+.BI \-\-onto " ref"
+Branch to search. Defaults to
+.BR origin/main .
+.TP
+.B \-\-fetch
+Refresh
+.I ref
+from its remote first. Requires network. A
+.IR remote / branch
+ref is fetched from that remote; a local ref is left alone.
+.TP
+.BR \-q ", " \-\-quiet
+No output, exit code only.
+.TP
+.BR \-h ", " \-\-help
+Print the usage summary. Note that
+.B git tree\-merged \-\-help
+is intercepted by
+.BR git (1)
+and shows this manual page instead; use
+.B git tree\-merged \-h
+for the short usage.
+.TP
+.B \-\-self\-test
+Build a throwaway repository, squash\-merge a branch into it, and assert both
+verdicts. Exits 0 if the checks pass.
+.SH "EXIT STATUS"
+.TP
+.B 0
+A commit with the same tree was found on
+.IR ref .
+.TP
+.B 1
+No such commit.
+.TP
+.B 2
+Usage or setup error, such as an unknown flag or an unresolvable ref.
+.SH EXAMPLES
+Is my current branch's content already on
+.BR origin/main ?
+.PP
+.RS 4
+.EX
+git tree\-merged
+.EE
+.RE
+.PP
+Check a specific branch against a release branch, refreshing it first:
+.PP
+.RS 4
+.EX
+git tree\-merged my\-feature \-\-onto origin/release\-1.2 \-\-fetch
+.EE
+.RE
+.PP
+Delete every local branch whose content has landed:
+.PP
+.RS 4
+.EX
+git for\-each\-ref \-\-format='%(refname:short)' refs/heads |
+while read \-r b; do
+    git tree\-merged "$b" \-q && git branch \-D "$b"
+done
+.EE
+.RE
+.SH "SEE ALSO"
+.BR git\-branch (1),
+.BR git\-cherry (1),
+.BR git\-log (1),
+.BR git\-patch\-id (1)
