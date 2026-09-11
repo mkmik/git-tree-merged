@@ -1,6 +1,6 @@
-.TH GIT\-TREE\-MERGED 1 "2026-08-20" "git\-tree\-merged" "Git Extras"
+.TH GIT\-TREE\-MERGED 1 "2026-09-11" "git\-tree\-merged" "Git Extras"
 .SH NAME
-git\-tree\-merged \- find a commit's tree on another branch
+git\-tree\-merged \- is a branch's content already in another branch (safe to delete)
 .SH SYNOPSIS
 .B git tree\-merged
 .RI [ commit ]
@@ -14,25 +14,41 @@ git\-tree\-merged \- find a commit's tree on another branch
 Squash, rebase and cherry\-pick all rewrite commit SHAs, so "is my work on
 main?" cannot be answered by SHA or by
 .BR "git branch \-\-merged" .
-A tree hash is a content hash of the whole worktree, so comparing trees
-answers it directly: equal tree means every file is byte\-identical, whatever
-the history looks like.
+.PP
+Comparing tree hashes answers it only while the branch is still current with
+.IR ref .
+The moment someone else lands first, the squash of your branch carries their
+changes as well, so its tree is "your content plus theirs" and no commit on
+.I ref
+has \(em or can ever have \(em your tree, however cleanly your work merged.
 .PP
 .B git tree\-merged
-resolves
+asks the question that survives all of it: it merges
 .I commit
-to its tree and walks
+into
 .I ref
-newest\-first, stopping at the first commit with the same tree. It reports
-that commit and its subject, or reports that no such commit exists.
+in memory and checks that the result changes nothing. If it does not, then
+.I ref
+already holds every change
+.I commit
+carries and the branch can be deleted without losing anything.
+.PP
+When a commit on
+.I ref
+happens to have
+.IR commit 's
+exact tree, it is named on a second line as a convenience. That line is a
+bonus, not the verdict \(em a squash that landed on a
+.I ref
+which had moved on has no such commit, and the verdict stands without it.
 .SH OPTIONS
 .TP
 .I commit
-Commit to look for. Defaults to
+Commit to check. Defaults to
 .BR HEAD .
 .TP
 .BI \-\-onto " ref"
-Branch to search. Defaults to
+Branch it should already be in. Defaults to
 .BR origin/main .
 .TP
 .B \-\-fetch
@@ -43,7 +59,7 @@ from its remote first. Requires network. A
 ref is fetched from that remote; a local ref is left alone.
 .TP
 .BR \-q ", " \-\-quiet
-No output, exit code only.
+No output, exit code only. Errors are still reported.
 .TP
 .BR \-h ", " \-\-help
 Print the usage summary. Note that
@@ -55,19 +71,47 @@ and shows this manual page instead; use
 for the short usage.
 .TP
 .B \-\-self\-test
-Build a throwaway repository, squash\-merge a branch into it, and assert both
-verdicts. Exits 0 if the checks pass.
+Build a throwaway repository, walk a branch through squash\-merge, drift, and a
+squash that lands on a target which moved on first, and assert every verdict.
+Exits 0 if the checks pass.
 .SH "EXIT STATUS"
 .TP
 .B 0
-A commit with the same tree was found on
-.IR ref .
+.I ref
+already contains every change
+.I commit
+carries.
 .TP
 .B 1
-No such commit.
+It does not, or the two conflict. The files
+.I commit
+would still add are listed.
 .TP
 .B 2
 Usage or setup error, such as an unknown flag or an unresolvable ref.
+.SH LIMITATIONS
+If
+.I ref
+edited the same lines
+.I after
+your work landed there, the in\-memory merge conflicts and the verdict is a
+conservative
+.BR 1 .
+Your content may well be in; the tool cannot tell, so it refuses to bless a
+deletion. Check that case by hand.
+.PP
+A stale
+.I ref
+gives a false
+.BR 1 ,
+never a false
+.BR 0 .
+Pass
+.B \-\-fetch
+when it matters.
+.PP
+Requires git 2.38 or newer, for
+.BR "git merge\-tree \-\-write\-tree" .
 .SH EXAMPLES
 Is my current branch's content already on
 .BR origin/main ?
@@ -98,6 +142,7 @@ done
 .RE
 .SH "SEE ALSO"
 .BR git\-branch (1),
+.BR git\-merge\-tree (1),
 .BR git\-cherry (1),
 .BR git\-log (1),
 .BR git\-patch\-id (1)

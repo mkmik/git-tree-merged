@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# Exit 0 if a commit on <onto> has exactly the same tree as <commit>.
+# Exit 0 if <onto> already contains every change <commit> carries -- that is,
+# deleting the branch loses nothing.
 #
 # Squash, rebase and cherry-pick all rewrite commit SHAs, so "is my work on
-# main?" cannot be answered by SHA or by `git branch --merged`. A tree hash is a
-# content hash of the whole worktree, so comparing trees answers it directly:
-# equal tree means every file is byte-identical, whatever the history looks like.
+# main?" cannot be answered by SHA or by `git branch --merged`. Comparing tree
+# hashes only answers it while the branch is current with <onto>: once someone
+# else lands first, the squash carries their changes too and no commit on
+# <onto> ever has your tree. Merging <commit> into <onto> and checking that the
+# result changes nothing answers it for good.
 #
 # Usage: git tree-merged [<commit>] [--onto <ref>] [--fetch] [-q]
 #
-#   <commit>      commit to look for (default HEAD)
-#   --onto <ref>  branch to search (default origin/main)
+#   <commit>      commit to check (default HEAD)
+#   --onto <ref>  branch it should already be in (default origin/main)
 #   --fetch       refresh <ref> from its remote first (network)
 #   -q            no output, exit code only
 #   --self-test   run the built-in checks and exit
 #
-# Exit: 0 found, 1 not found, 2 usage/setup error.
+# Exit: 0 absorbed, 1 not, 2 usage/setup error.
 
 set -euo pipefail
 
@@ -32,7 +35,7 @@ while [ $# -gt 0 ]; do
         --fetch) FETCH=true; shift ;;
         -q|--quiet) QUIET=true; shift ;;
         --self-test) shift; self_test=true; break ;;
-        -h|--help) sed -n '2,17p' "${SELF}" | sed 's/^# \?//'; exit 0 ;;
+        -h|--help) sed -n '2,20p' "${SELF}" | sed 's/^# \?//'; exit 0 ;;
         -*) echo "unknown flag: $1" >&2; exit 2 ;;
         *) COMMIT="$1"; shift ;;
     esac
@@ -51,27 +54,51 @@ run() {
         esac
     fi
 
-    local tree
-    tree=$(git rev-parse --verify "${COMMIT}^{tree}") || { echo "no such commit: ${COMMIT}" >&2; exit 2; }
-    git rev-parse --verify --quiet "${ONTO}" >/dev/null || { echo "no such ref: ${ONTO}" >&2; exit 2; }
+    local onto_tree merged rc=0
+    git rev-parse --verify --quiet "${COMMIT}^{commit}" >/dev/null || { echo "no such commit: ${COMMIT}" >&2; exit 2; }
+    git rev-parse --verify --quiet "${ONTO}^{commit}"   >/dev/null || { echo "no such ref: ${ONTO}" >&2; exit 2; }
+    onto_tree=$(git rev-parse --verify "${ONTO}^{tree}")
 
-    # First commit on <onto> whose tree matches. Stops at the first hit.
-    local match
+    # Merging <commit> into <onto> is a no-op exactly when <onto> already holds
+    # every change <commit> carries. Unlike comparing trees, that survives a
+    # squash which landed on an <onto> that had moved on -- the common case.
+    # git's own stderr says more than we could when this fails, so let it out.
+    merged=$(git merge-tree --write-tree "${ONTO}" "${COMMIT}") || rc=$?
+
+    case "${rc}" in
+        0) ;;
+        1) say "❌ ${COMMIT} conflicts with ${ONTO}"
+           say "   ${ONTO} touched the same lines. The content may still have landed -- check by hand."
+           return 1 ;;
+        *) echo "git merge-tree failed (needs git 2.38+)" >&2; exit 2 ;;
+    esac
+
+    if [ "${merged}" != "${onto_tree}" ]; then
+        say "❌ ${COMMIT} still adds to ${ONTO}:"
+        say "$(git diff --stat "${onto_tree}" "${merged}")"
+        return 1
+    fi
+
+    say "✅ ${COMMIT} is absorbed into ${ONTO} -- safe to delete"
+
+    # Bonus, not the verdict: name the commit that landed it, when one has the
+    # exact tree. A squash onto an advanced <onto> has no such commit, and then
+    # this line is simply absent. `--not <base>^@` bounds the walk to
+    # <base>..<onto> but keeps <base> itself, so a fast-forward is still named.
+    local base tree match
+    base=$(git merge-base "${ONTO}" "${COMMIT}")
+    tree=$(git rev-parse --verify "${COMMIT}^{tree}")
     # Process substitution, not a pipe: awk exits at the first match, which would
     # SIGPIPE git log and trip `pipefail` into a nondeterministic exit 141.
-    match=$(awk -v t="${tree}" '$1==t {print $2; exit}' < <(git log --format='%T %H' "${ONTO}"))
-
-    if [ -n "${match}" ]; then
-        say "✅ tree ${tree:0:12} is on ${ONTO} as ${match:0:12}"
-        say "   $(git log -1 --format='%s' "${match}")"
-        return 0
-    fi
-    say "❌ tree ${tree:0:12} (${COMMIT}) is not on ${ONTO}"
-    return 1
+    match=$(awk -v t="${tree}" '$1==t {print $2; exit}' \
+            < <(git log --format='%T %H' "${ONTO}" --not "${base}^@"))
+    [ -n "${match}" ] && say "   landed as ${match:0:12} \"$(git log -1 --format='%s' "${match}")\""
+    return 0
 }
 
 # --- self-test -------------------------------------------------------------
-# Builds a throwaway repo, squash-merges a branch, and asserts both verdicts.
+# Builds a throwaway repo and walks a branch through squash-merge, drift, and a
+# squash that lands on a target which moved on first. Asserts every verdict.
 if [ "${self_test:-false}" = true ]; then
     tmp=$(mktemp -d); trap 'rm -rf "${tmp}"' EXIT
     export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
@@ -80,20 +107,39 @@ if [ "${self_test:-false}" = true ]; then
     # Hermetic: ignore the developer's global hooks/config so the test is the
     # same everywhere (a global core.hooksPath otherwise fires in this repo).
     mkdir -p "${tmp}/nohooks"; git config core.hooksPath "${tmp}/nohooks"
+    git config rerere.enabled false
     echo base > f; git add f; git commit -qm base
     git checkout -qb feat
     echo change > f; git add f; git commit -qm one
     echo more >> f; git add f; git commit -qm two          # two commits, one tree
     feat_tree=$(git rev-parse HEAD^{tree})
     git checkout -q main
-    git merge -q --squash feat >/dev/null && git commit -qm "squashed"  # rewrites SHAs
+    git merge -q --squash feat >/dev/null 2>&1 && git commit -qm "squashed"  # rewrites SHAs
     [ "$(git rev-parse HEAD^{tree})" = "${feat_tree}" ] || { echo "self-test setup broken"; exit 2; }
 
     fail=0
-    "${SELF}" feat --onto main -q || { echo "FAIL: squashed tree not found"; fail=1; }
-    git checkout -q feat; echo drift >> f; git add f; git commit -qm drift
+    # Squashed onto an unchanged main: absorbed, and a commit has the exact tree.
+    out=$("${SELF}" feat --onto main) || { echo "FAIL: squashed tree not absorbed"; fail=1; }
+    case "${out}" in *"landed as"*) ;; *) echo "FAIL: no 'landed as' line"; fail=1 ;; esac
+
+    # Drifted since the squash: not absorbed. A new file, so the merge is clean
+    # and this exercises the "still adds" path rather than the conflict one.
+    git checkout -q feat; echo drift > d; git add d; git commit -qm drift
     rc=0; "${SELF}" feat --onto main -q || rc=$?
     [ "${rc}" -eq 1 ] || { echo "FAIL: drifted tree: want exit 1, got ${rc}"; fail=1; }
+
+    # main moves on before the squash lands: absorbed, yet no commit on main
+    # has -- or can ever have -- feat2's tree. This is what tree equality missed.
+    git checkout -qb feat2 main
+    echo work > w; git add w; git commit -qm "feat2 work"
+    feat2_tree=$(git rev-parse HEAD^{tree})
+    git checkout -q main
+    echo other > g; git add g; git commit -qm "someone else's work"
+    git merge -q --squash feat2 >/dev/null 2>&1 && git commit -qm "squashed feat2"
+    "${SELF}" feat2 --onto main -q || { echo "FAIL: squash onto advanced main"; fail=1; }
+    if grep -q "${feat2_tree}" < <(git log --format=%T main); then
+        echo "FAIL: advanced-main case no longer exercised"; fail=1
+    fi
 
     [ "${fail}" -eq 0 ] && echo "✅ git-tree-merged self-test passed"
     exit "${fail}"
